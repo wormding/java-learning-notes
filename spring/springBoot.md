@@ -1,4 +1,4 @@
-# 1.SpringBootApplication
+# 1.SpringBootApplication.java
 ```
 @Target(ElementType.TYPE)
 @Retention(RetentionPolicy.RUNTIME)
