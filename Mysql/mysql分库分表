@@ -1,0 +1,325 @@
+转自 https://www.cnblogs.com/zwt1990/p/6762135.html
+
+-----------------------------------------------------------------------------
+
+复制代码
+<dependency>
+            <groupId>com.dangdang</groupId>
+            <artifactId>sharding-jdbc-core</artifactId>
+            <version>1.4.2</version>
+        </dependency>
+        <dependency>
+            <groupId>com.dangdang</groupId>
+            <artifactId>sharding-jdbc-config-spring</artifactId>
+            <version>1.4.0</version>
+        </dependency>
+复制代码
+　　二、新建一个sharding-jdbc.xml文件，实现分库分表的配置
+
+复制代码
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xmlns:context="http://www.springframework.org/schema/context" 
+    xmlns:tx="http://www.springframework.org/schema/tx"
+    xmlns:rdb="http://www.dangdang.com/schema/ddframe/rdb"
+    xsi:schemaLocation="http://www.springframework.org/schema/beans
+                        http://www.springframework.org/schema/beans/spring-beans.xsd 
+                        http://www.springframework.org/schema/tx 
+                        http://www.springframework.org/schema/tx/spring-tx.xsd
+                        http://www.springframework.org/schema/context 
+                        http://www.springframework.org/schema/context/spring-context.xsd
+                        http://www.dangdang.com/schema/ddframe/rdb 
+                        http://www.dangdang.com/schema/ddframe/rdb/rdb.xsd">
+                
+    <rdb:strategy id="tableShardingStrategy" sharding-columns="user_id" algorithm-class="com.meiren.member.common.sharding.MemberSingleKeyTableShardingAlgorithm"/>
+    
+    <rdb:data-source id="shardingDataSource">
+        <rdb:sharding-rule data-sources="dataSource">
+            <rdb:table-rules>
+                <rdb:table-rule logic-table="member_index" actual-tables="member_index_tbl_${[0,1,2,3,4,5,6,7,8,9]}${0..9}"  table-strategy="tableShardingStrategy"/>
+                <rdb:table-rule logic-table="member_details" actual-tables="member_details_tbl_${[0,1,2,3,4,5,6,7,8,9]}${0..9}"  table-strategy="tableShardingStrategy"/>
+            </rdb:table-rules>
+        </rdb:sharding-rule>
+    </rdb:data-source>
+    
+    <bean id="transactionManager" class="org.springframework.jdbc.datasource.DataSourceTransactionManager">
+        <property name="dataSource" ref="shardingDataSource" />
+    </bean>
+</beans>
+复制代码
+　　这里我简单介绍下一些属性的含义，
+
+　　 <rdb:strategy id="tableShardingStrategy" sharding-columns="user_id" algorithm-class="com.meiren.member.common.sharding.MemberSingleKeyTableShardingAlgorithm"/>  配置分表规则器  sharding-columns：分表规 则　
+
+　　依赖的名（根据user_id取模分表），algorithm-class:分表规则的实现类 
+
+　　<rdb:sharding-rule data-sources="dataSource"> 这里填写关联数据源（多个数据源用逗号隔开）,
+
+　　<rdb:table-rule logic-table="member_index" actual-tables="member_index_tbl_${[0,1,2,3,4,5,6,7,8,9]}${0..9}"  table-strategy="tableShardingStrategy"/>  logic-table：逻辑表名（mybatis中代替的表名）actual-tables：
+
+　　数据库实际的表名，这里支持inline表达式，比如：member_index_tbl_${0..2}会解析成member_index_tbl_0，member_index_tbl_1，member_index_tbl_2；member_index_tbl_${[a,b,c]}会被解析成
+
+　   member_index_tbl_a,member_index_tbl_b和member_index_tbl_c,两种表达式一起使用的时候，会采取笛卡尔积的方式：member_index_tbl_${[a,b]}${0..2}解析为member_index_tbl_a0,member_index_tbl_a1                                       member_index_tbl_a2,member_index_tbl_b0,member_index_tbl_b1,member_index_tbl_b2;table-strategy:前面定义的分表规则器；
+
+     三、配置好改文件后，需要修改之前我们的spring-dataSource的几个地方，把sqlSessionFactory和transactionManager原来关联的dataSource统一修改为shardingDataSource（这一步作用就是把数据源全部托管给sharding去管理）
+
+　　
+
+　四、实现分表（分库）逻辑，我们的分表逻辑类需要实现SingleKeyTableShardingAlgorithm接口的三个方法doBetweenSharding、doEqualSharding、doInSharding
+
+复制代码
+/**
+ * 分表逻辑
+ * @author zhangwentao
+ *
+ */
+public class MemberSingleKeyTableShardingAlgorithm implements SingleKeyTableShardingAlgorithm<Long> {
+    
+    /**
+     * sql between 规则
+     */
+    public Collection<String> doBetweenSharding(Collection<String> tableNames, ShardingValue<Long> shardingValue) {
+        Collection<String> result = new LinkedHashSet<String>(tableNames.size());
+        Range<Long> range = (Range<Long>) shardingValue.getValueRange();
+        for (long i = range.lowerEndpoint(); i <= range.upperEndpoint(); i++) {
+            Long modValue = i % 100;
+            String modStr = modValue < 10 ? "0" + modValue : modValue.toString();
+            for (String each : tableNames) {
+                if (each.endsWith(modStr)) {
+                    result.add(each);
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * sql == 规则
+     */
+    public String doEqualSharding(Collection<String> tableNames, ShardingValue<Long> shardingValue) {
+        Long modValue = shardingValue.getValue() % 100;
+        String modStr = modValue < 10 ? "0" + modValue : modValue.toString();
+        for (String each : tableNames) {
+            if (each.endsWith(modStr)) {
+                return each;
+            }
+        }
+        throw new IllegalArgumentException();
+    }
+
+    /**
+     * sql in 规则
+     */
+    public Collection<String> doInSharding(Collection<String> tableNames, ShardingValue<Long> shardingValue) {
+
+        Collection<String> result = new LinkedHashSet<String>(tableNames.size());
+        for (long value : shardingValue.getValues()) {
+            Long modValue = value % 100;
+            String modStr = modValue < 10 ? "0" + modValue : modValue.toString();
+            for (String tableName : tableNames) {
+                if (tableName.endsWith(modStr)) {
+                    result.add(tableName);
+                }
+            }
+        }
+        return result;
+    }
+    
+}
+复制代码
+五、以上四步，我们就完成了sharding-jdbc的搭建，我们可以写一个测试demo来检查我们的成果
+
+<select id="getDetailsById" resultType="com.meiren.member.dataobject.MemberDetailsDO"
+        parameterType="java.lang.Long">
+        select user_id userId ,qq,email from member_details where     user_id =#{userId} limit 1
+    </select>
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+13
+14
+15
+16
+17
+18
+19
+20
+21
+private static final String SERVICE_PROVIDER_XML = "/spring/member-service.xml";
+      private static final String BEAN_NAME = "idcacheService";
+       
+      private ClassPathXmlApplicationContext context = null;
+      IdcacheServiceImpl bean = null;
+      IdcacheDao idcacheDao;
+       
+      @Before
+      public void before() {
+          context= new ClassPathXmlApplicationContext(
+                  new String[] {SERVICE_PROVIDER_XML});
+         idcacheDao=context.getBean("IdcacheDao", IdcacheDao.class);
+      }
+       
+      @Test
+      public void getAllCreditActionTest() {
+       // int id = bean.insertIdcache();
+          Long s=100l;
+        MemberDetailsDO memberDetailsDO=idcacheDao.getDetailsById(s);
+        System.out.println("QQ---------------------"+memberDetailsDO.getQq());
+      }
+　　打印sql语句，输出结果：QQ-------------------------------------100，证明成功！
+
+
+
+　　注意点：这次搭建过程中，我有碰到一个小坑，就是执行的时候会报错：，官方文档是有解决方案：引入 <context:property-placeholder location="classpath:/member_service.properties" ignore-unresolvable="true" />  ，引入这行代码的时候，·必须要要把这边管理配配置文件的bean删除，换句话说，即Spring容器仅允许最多定义一个PropertyPlaceholderConfigurer(或<context:property-placeholder/>)，其余的会被Spring忽略掉（当时搞了半天啊）
+
+小结：这次给大家分享了sharding-jdbc的配置是为了解决大数据量进行分库分表的架构，下一张，我将介绍拆分业务所需的duboo+zookeeper的配置（分布式），欢迎关注！
+
+ 
+
+标签: mybatis, sharding-jdbc
+好文要顶 关注我 收藏该文    
+等待九月
+关注 - 3
+粉丝 - 11
++加关注
+4 0
+« 上一篇：spring mvc整合mybaitis和log4j
+» 下一篇：JAVA封装消息中间件调用一（kafka生产者篇）
+posted @ 2017-04-25 14:57 等待九月 阅读(31947) 评论(6) 编辑 收藏
+
+发表评论
+   #1楼 2017-08-10 00:12 | 芋艿  
+还不错。
+sharding-jdbc 源码解析 17篇：http://www.yunai.me/categories/Sharding-JDBC/?csdn&602
+支持(0)反对(0)
+
+   #2楼 2017-10-17 23:40 | 老胡与海  
+请教个问题，如果两个数据库操作在同一个事务内，但是数据落到了不同的库中，用sharding-jdbc如何保证事务？
+支持(0)反对(0)
+
+   #3楼[楼主] 2017-10-19 16:57 | 等待九月  
+@ 老胡与海 
+开启事务后，出现逻辑异常，两个数据库都会自动回滚，sharding-jdbc是支持的，如果是因为网络或者硬件异常则无法回滚
+支持(0)反对(0)
+
+   #4楼[楼主] 2017-10-20 11:32 | 等待九月  
+@ 老胡与海
+可参考sharding-jdbc的柔性事务
+支持(0)反对(0)
+
+   #5楼 2017-12-11 14:37 | yuan.net  
+这个框架有sql语句限制，比如OR union ，这些怎么支持
+支持(0)反对(0)
+
+   #6楼[楼主] 2017-12-19 13:54 | 等待九月  
+@ yuan.net
+分表的联合查询不建议使用该框架，我是把mysql的数据同步到elasticsearch进行筛选
+支持(0)反对(0)
+
+刷新评论刷新页面返回顶部
+注册用户登录后才能发表评论，请 登录 或 注册，访问网站首页。
+【推荐】超50万VC++源码: 大型组态工控、电力仿真CAD与GIS源码库！
+【推荐】华为云11.11普惠季 血拼风暴 一促即发
+【工具】SpreadJS纯前端表格控件，可嵌入应用开发的在线Excel
+【推荐】腾讯云新注册用户域名抢购1元起
+腾讯云1023
+最新IT新闻:
+· 人人车陷数据造假"罗生门" 尼尔森称其报告未经核实
+· 微软正向全球更多用户推送Skype 8
+· 2018全球创新企业1000强公布 中国有175家入榜
+· 谷歌母公司Alphabet现领导危机：CEO佩奇经常不见人影
+· 特斯拉构建全球电动车帝国：明年落地印度非洲南美
+» 更多新闻...
+
+最新知识库文章:
+· 程序员：用代码改变世界
+· 阿里云的这群疯子
+· 为什么说 Java 程序员必须掌握 Spring Boot ？
+· 在学习中，有一个比掌握知识更重要的能力
+· 如何招到一个靠谱的程序员
+» 更多知识库文章...
+昵称：等待九月
+园龄：1年6个月
+粉丝：11
+关注：3
++加关注
+<	2018年11月	>
+日	一	二	三	四	五	六
+28	29	30	31	1	2	3
+4	5	6	7	8	9	10
+11	12	13	14	15	16	17
+18	19	20	21	22	23	24
+25	26	27	28	29	30	1
+2	3	4	5	6	7	8
+搜索
+ 
+ 
+常用链接
+我的随笔
+我的评论
+我的参与
+最新评论
+我的标签
+更多链接
+我的标签
+spring mvc(2)
+mybatis(2)
+mysql 慢sql ELK(1)
+netty 多路复用 NIO(1)
+redis(1)
+sharding-jdbc(1)
+spring 源码 事务(1)
+zookeeper 选举 原理(1)
+代理(1)
+多线程(1)
+更多
+随笔档案
+2018年4月 (3)
+2018年2月 (2)
+2018年1月 (4)
+2017年10月 (1)
+2017年9月 (1)
+2017年7月 (1)
+2017年6月 (5)
+2017年4月 (3)
+最新评论
+1. Re:JAVA封装消息中间件调用二（kafka消费者篇）
+@伴云皓月 KafkaConsumer 是非线程安全的，需要单例创建，多线程可以用在消费者拉取到消息之后让多线程处理...
+--等待九月
+2. Re:JAVA封装消息中间件调用二（kafka消费者篇）
+java.util.ConcurrentModificationException: KafkaConsumer is not safe for multi-threaded access这个问题您是......
+--伴云皓月
+3. Re:sharding-jdbc结合mybatis实现分库分表功能
+@yuan.net分表的联合查询不建议使用该框架，我是把mysql的数据同步到elasticsearch进行筛选...
+--等待九月
+4. Re:sharding-jdbc结合mybatis实现分库分表功能
+这个框架有sql语句限制，比如OR  union  ，这些怎么支持
+--yuan.net
+5. Re:sharding-jdbc结合mybatis实现分库分表功能
+@老胡与海可参考sharding-jdbc的柔性事务...
+--等待九月
+阅读排行榜
+1. sharding-jdbc结合mybatis实现分库分表功能(31942)
+2. JAVA封装消息中间件调用二（kafka消费者篇）(6156)
+3. elasticsearch学习笔记--原理介绍(3808)
+4. JAVA封装消息中间件调用一（kafka生产者篇）(3792)
+5. spring源码解析--事务篇（前篇）(2775)
+评论排行榜
+1. JAVA封装消息中间件调用二（kafka消费者篇）(7)
+2. sharding-jdbc结合mybatis实现分库分表功能(6)
+3. spring mvc整合mybaitis和log4j(3)
+推荐排行榜
+1. sharding-jdbc结合mybatis实现分库分表功能(4)
+2. spring源码解析--事务篇（前篇）(1)
+3. elasticsearch学习笔记--原理介绍(1)
+Copyright ©2018 等待九月
