@@ -1,0 +1,225 @@
+0. 前言
+在学习Java的类加载器的时候，我们都会看到类加载器的体系结构 
+
+
+上图红色框住的就是jvm提供的三个类加载器，而除了这三个外还有一个自定义类加载器。
+
+我们学习一门技术，一定要先知道为什么要学习这门技术，这门技术有什么用，比如说自定义类加载器，我们为什么要自定义类加载器。为什么有了jvm自带的类加载器后还有用户自己定义类加载器呢？
+
+于是我去找了一下原因，大致就是以下这些
+
+加密：众所周知，java代码很容易被反编译，如果你需要把自己的代码进行加密，可以先将编译后的代码用某种加密算法加密，然后实现自己的类加载器，负责将这段加密后的代码还原。
+从非标准的来源加载代码：例如你的部分字节码是放在数据库中甚至是网络上的，就可以自己写个类加载器，从指定的来源加载类。
+动态创建：为了性能等等可能的理由，根据实际情况动态创建代码并执行。
+其他
+好了，现在就引出来了下面要讲的内容。下面我要讲的就是自定义类加载器的加密与解密
+
+1. 自定义类加载器（带解密功能）
+1.1 测试类
+我先准备好一个类Car，等下测试的时候要用到，注意该类没有包名，为了等下测试比较方便
+
+/**
+* 测试类
+ * 
+ * @author Jason
+ *
+ */
+public class Car {
+    public Car(){
+        System.out.println("Car run......");
+    }
+}   
+
+1.2 加密类
+加密类主要是用来加密编译好的class文件
+
+package edu.jyu.jvm.custom;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
+
+/**
+ * 加密类
+ * 
+ * @author Jason
+ *
+ */
+public class EncryptUtil {
+    /**
+     * 将数据从源文件中读取出来，让其每一位数据都取异或1的值，再写入目标文件
+     * 
+     * @param src
+     *            源文件
+     * @param des
+     *            加密后的文件
+     * @throws Exception
+     */
+    public static void encrypt(File src, File des) throws Exception {
+        InputStream in = new FileInputStream(src);
+        OutputStream out = new FileOutputStream(des);
+
+        int ch;
+        while (-1 != (ch = in.read())) {
+            ch = ch ^ 0xff;//加密，0变成1，1变成0
+            out.write(ch);
+        }
+        in.close();
+        out.close();
+    }
+}
+这是一个很简单的加密类，加密算法就是每当从源文件里读出四个字节数据便异或0xff，再将异或后的结果写入目标文件。关键代码就是这一句
+
+ch = ch ^ 0xff;
+1
+当然还有很多其它加密算法，这只是为了方便才用这个方法加密，因为等下我要在自定义类加载器中解码的时候只需要再异或一下0xff就可以了。异或运算的规则是两个运算数相同取0，相异取1，如1^1=0，1^0=1，为什么说用它来比较方便呢？下面我解释一下，先看下面这段代码
+
+public class Test {
+    public static void main(String[] args) {
+        int a = 3;
+        a = a^0xff;
+        System.out.println("第一次异或运算后: a = "+a);
+        a = a^0xff;
+        System.out.println("第二次异或运算后: a = "+a);
+    }
+}    
+
+程序运行后输出的结果
+
+第一次异或运算后: a = 252
+第二次异或运算后: a = 3
+
+可以看出，再进行两次异或运算后，a的值又变成了3。那为什么要异或0xff,而不是其它值呢？。因为一个整型数据是4个字节，32位二进制，而2位十六进制刚好又是4个字节，32位二机制，而0xff刚好32位二进制都是1，任何整型数据和它作两次异或运算都会得到原来的值。将这两次运算化为二进制看更加容易理解，下图就是运算过程 
+
+
+1.3 自定义类加载器
+现在就来写自定义类加载器，要写自定义类加载器，有以下几个步骤
+
+继承java.lang.ClassLoader
+覆盖它的findClass(String name)方法
+自定义类加载器代码
+
+package edu.jyu.jvm.custom;
+
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
+
+/**
+ * 自定义类加载器，带解密功能
+ * 
+ * @author Jason
+ *
+ */
+public class CustomClassLoader extends ClassLoader {
+
+    private String name;// 类加载器的名字，方便看测试结果
+    private String basPath;// 指定加载类的基本路径
+    private final String FILETYPE = ".class";// 加载文件的扩展名
+
+    public CustomClassLoader(String name) {
+        super();// 让系统类加载器成为该类加载器的父加载器
+        this.name = name;
+    }
+
+
+    @Override
+    protected Class<?> findClass(String name) throws ClassNotFoundException {
+        byte[] data = this.loadClassData(name);
+        return this.defineClass(name, data, 0, data.length);
+    }
+
+    /**
+     * 加载二进制文件
+     * @param name 文件名，不含扩展名
+     * @return
+     */
+    private byte[] loadClassData(String name) {
+        InputStream in = null;
+        byte[] data = null;
+        ByteArrayOutputStream bos = null;
+        try {
+            name = name.replace(".", "\\");
+            in = new FileInputStream(new File(basPath + name + FILETYPE));
+            bos = new ByteArrayOutputStream();
+            int ch = 0;
+            while (-1 != (ch = in.read())) {
+                ch = ch^0xff; //解密
+                bos.write(ch);
+            }
+            data = bos.toByteArray();
+        } catch (Exception e) {
+            e.printStackTrace();
+        } finally {
+            try {
+                in.close();
+                bos.close();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }
+        return data;
+    }
+
+    public void setBasPath(String basPath) {
+        this.basPath = basPath;
+    }
+}
+
+1.4 开始测试
+加密Car.class文件。找到Car.class文件，然后拷到D：\myclasses\src\下，再在myclasses下创建一个des文件夹，运行以下代码，便会在des文件夹下生成一个加密后的Car.class文件
+package edu.jyu.jvm.custom;
+
+import java.io.File;
+/**
+ * 加密文件
+ * @author Jason
+ *
+ */
+public class Test2 {
+
+    public static void main(String[] args) throws Exception {
+        File src = new File("D:\\myclasses\\src\\Car.class");
+        File des = new File("D:\\myclasses\\des\\Car.class");
+        EncryptUtil.encrypt(src, des);//加密
+    }
+}
+
+用自定义的类加载器去加载类Car，并创建该类的对象，代码如下
+package edu.jyu.jvm.custom;
+
+public class Test {
+
+    public static void main(String[] args) throws Exception {
+
+        CustomClassLoader loader = new CustomClassLoader();
+        loader.setBasPath("D:\\myclasses\\des\\");//指定自定义类加载器加载路径
+        Class<?> clazz = loader.loadClass("Car"); //指定加载Car类
+        System.out.println(clazz.getClassLoader());//输出加载类Car的加载器
+        Object object = clazz.newInstance();//创建Car类对象，会调用构造方法
+    }
+}
+
+运行结果
+
+edu.jyu.jvm.custom.CustomClassLoader@70dea4e
+Car run......
+
+从运行结果中，我们可以看出，Car类的确是被自定义的类加载器CustomClassLoader加载的，而且确实也创建了Car类的对象，调用了它的构造方法。如果我将CustomClassLoader类中的解密的代码（ch = ch^0xff）注释掉，则会抛出下面这个异常
+
+Exception in thread "main" java.lang.ClassFormatError: Incompatible magic value 889275713 in class file Car
+    at java.lang.ClassLoader.defineClass1(Native Method)
+    at java.lang.ClassLoader.defineClass(ClassLoader.java:760)
+    at java.lang.ClassLoader.defineClass(ClassLoader.java:642)
+    at edu.jyu.jvm.custom.CustomClassLoader.findClass(CustomClassLoader.java:22)
+    at java.lang.ClassLoader.loadClass(ClassLoader.java:424)
+    at java.lang.ClassLoader.loadClass(ClassLoader.java:357)
+    at edu.jyu.jvm.custom.Test.main(Test.java:9)
+--------------------- 
+作者：腹黑大壁花 
+来源：CSDN 
+原文：https://blog.csdn.net/TimHeath/article/details/52884482 
+版权声明：本文为博主原创文章，转载请附上博文链接！
