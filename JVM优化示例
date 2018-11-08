@@ -1,0 +1,49 @@
+1.增大吞吐量提升系统性能
+吞吐量优先的方案将会尽可能减少系统执行垃圾回收的总时间，故可以考虑关注系统吞吐量的并行回收收集器。在拥有高性能的计算机上，进行吞吐量优先优化，可以使用参数：
+
+java –Xmx3800m –Xms3800m –Xmn2G –Xss128k –XX:+UseParallelGC 
+   –XX:ParallelGC-Threads=20 –XX:+UseParallelOldGC
+–Xmx380m –Xms3800m：设置 Java 堆的最大值和初始值。一般情况下，为了避免堆内存的频繁震荡，导致系统性能下降，我们的做法是设置最大堆等于最小堆。
+假设这里把最小堆减少为最大堆的一半，即 1900m，那么 JVM 会尽可能在 1900MB 堆空间中运行，如果这样，发生 GC 的可能性就会比较高；
+
+-Xss128k：减少线程栈的大小，这样可以使剩余的系统内存支持更多的线程；
+
+-Xmn2g：设置年轻代区域大小为 2GB；
+
+–XX:+UseParallelGC：年轻代使用并行垃圾回收收集器。这是一个关注吞吐量的收集器，可以尽可能地减少 GC 时间。
+
+–XX:ParallelGC-Threads：设置用于垃圾回收的线程数，通常情况下，可以设置和 CPU 数量相等。但在 CPU 数量比较多的情况下，设置相对较小的数值也是合理的；
+
+–XX:+UseParallelOldGC：设置年老代使用并行回收收集器。
+
+
+2. 使用非占有的垃圾回收器
+为降低应用软件的垃圾回收时的停顿，首先考虑的是使用关注系统停顿的 CMS 回收器，其次，为了减少 Full GC 次数，应尽可能将对象预留在年轻代，因为年轻代 Minor GC 的成本远远小于年老代的 Full GC。
+
+java –Xmx3550m –Xms3550m –Xmn2g –Xss128k –XX:ParallelGCThreads=20
+ –XX:+UseConcMarkSweepGC –XX:+UseParNewGC –XX:+SurvivorRatio=8 –XX:TargetSurvivorRatio=90
+ –XX:MaxTenuringThreshold=31
+–XX:ParallelGCThreads=20：设置 20 个线程进行垃圾回收；
+
+–XX:+UseParNewGC：年轻代使用并行回收器；
+
+–XX:+UseConcMarkSweepGC：年老代使用 CMS 收集器降低停顿；
+
+–XX:+SurvivorRatio：设置 Eden 区和 Survivor 区的比例为 8:1。稍大的 Survivor 空间可以提高在年轻代回收生命周期较短的对象的可能性，如果 Survivor 不够大，一些短命的对象可能直接进入年老代，这对系统来说是不利的。
+
+–XX:TargetSurvivorRatio=90：设置 Survivor 区的可使用率。这里设置为 90%，则允许 90%的 Survivor 空间被使用。默认值是 50%。故该设置提高了 Survivor 区的使用率。当存放的对象超过这个百分比，则对象会向年老代压缩。因此，这个选项更有助于将对象留在年轻代。
+
+–XX:MaxTenuringThreshold：设置年轻对象晋升到年老代的年龄。默认值是 15 次，即对象经过 15 次 Minor GC 依然存活，则进入年老代。这里设置为 31，目的是让对象尽可能地保存在年轻代区域。
+
+3.如何让大对象进入年老代
+我们在大部分情况下都会选择将对象分配在年轻代。但是，对于占用内存较多的大对象而言，它的选择可能就不是这样的。因为大对象出现在年轻代很可能扰乱年轻代 GC，并破坏年轻代原有的对象结构。因为尝试在年轻代分配大对象，很可能导致空间不足，为了有足够的空间容纳大对象，JVM 不得不将年轻代中的年轻对象挪到年老代。因为大对象占用空间多，所以可能需要移动大量小的年轻对象进入年老代，这对 GC 相当不利。基于以上原因，可以将大对象直接分配到年老代，保持年轻代对象结构的完整性，这样可以提高 GC 的效率。如果一个大对象同时又是一个短命的对象，假设这种情况出现很频繁，那对于 GC 来说会是一场灾难。原本应该用于存放永久对象的年老代，被短命的对象塞满，这也意味着对堆空间进行了洗牌，扰乱了分代内存回收的基本思路。因此，在软件开发过程中，应该尽可能避免使用短命的大对象。可以使用参数-XX:PetenureSizeThreshold 设置大对象直接进入年老代的阈值。当对象的大小超过这个值时，将直接在年老代分配。参数-XX:PetenureSizeThreshold 只对串行收集器和年轻代并行收集器有效，并行回收收集器不识别这个参数。
+
+public class BigObj2Old {
+ public static void main(String[] args){
+ byte[] b;
+ b = new byte[1024*1024];//分配一个 1MB 的对象
+ }
+}
+使用 JVM 参数-XX:+PrintGCDetails –Xmx20M –Xms20MB 运行，可以得到清单 9 所示日志输出。
+可以看到该对象被分配在了年轻代，占用了 25%的空间。如果需要将 1MB 以上的对象直接在年老代分配，
+设置-XX:PetenureSizeThreshold=1000000，程序运行后输出如清单 10 所示
