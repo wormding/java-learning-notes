@@ -122,4 +122,5 @@ public class ControllerInterceptor {
 }
 
 ```
-## II. AspectJAutoProxyBeanDefinitionParser
+## II.分析 
+	aop:config具体的解析类为AopNamespaceHandler.java，通过跟踪分析，最终会创建一个autoProxyCreator。
